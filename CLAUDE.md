@@ -10,7 +10,8 @@ uv sync
 
 # Run sync (requires credentials.json)
 uv run mail-room sync --db gmail_metadata.sqlite
-uv run mail-room sync --db gmail_metadata.sqlite --incremental -v
+uv run mail-room sync --db gmail_metadata.sqlite -v
+uv run mail-room sync --db gmail_metadata.sqlite --overwrite
 
 # Run web interface (no API calls needed)
 uv run mail-room serve --db gmail_metadata.sqlite
@@ -33,7 +34,7 @@ This is a two-phase CLI tool: **sync** pulls metadata from the Gmail API into SQ
 
 - `cli.py` — `argparse` entry point; parses args and calls into sync or report
 - `api.py` — OAuth credential loading/refresh (`load_credentials`), Gmail service construction (`build_gmail_service`), and `execute_with_retry` (exponential backoff for rate limits and transient network errors)
-- `sync.py` — `run_sync` orchestrates `messages.list` pagination → batched `messages.get` (50 per batch via `new_batch_http_request`) → `db.insert_many`. Includes quota pacing via `_pace_after_quota_units` and incremental mode (skip already-stored IDs)
+- `sync.py` — `run_sync` orchestrates `messages.list` pagination → batched `messages.get` (50 per batch via `new_batch_http_request`) → `db.insert_many`. Includes quota pacing via `_pace_after_quota_units`. Default is incremental (skip already-stored IDs); `--overwrite` clears the table and rebuilds.
 - `db.py` — SQLite schema (`messages` + `sync_meta` tables), CRUD helpers, and the `aggregate_by_sender` / `messages_by_sender` query functions
 - `parsing.py` — `parse_from_header` normalizes raw `From:` headers into `(raw, display_name, address_normalized)` using stdlib `email.utils.parseaddr`
 - `report.py` — `write_report` formats aggregated or per-sender rows as an aligned text table or CSV
@@ -42,6 +43,6 @@ This is a two-phase CLI tool: **sync** pulls metadata from the Gmail API into SQ
 
 **Gmail quota:** `messages.list` costs 5 units; `messages.get` costs 5 units. Default cap is 12,000 units/min (Gmail limit is 15,000). The sync code paces after each list page and after each batch fetch.
 
-**Incremental sync:** passes `--incremental` to skip fetching metadata for message IDs already in the DB, but still does a full `messages.list` pass to find new IDs.
+**Incremental sync (default):** skips fetching metadata for message IDs already in the DB, but still does a full `messages.list` pass to find new IDs. Pass `--overwrite` to delete stored messages and re-download.
 
 **Sensitive files** (gitignored): `credentials.json` (OAuth client secret), `token.json` (saved refresh token), `*.sqlite` (mailbox metadata).

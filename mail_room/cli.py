@@ -67,12 +67,18 @@ def main(argv=None):
         help="Throttle Gmail usage to ~N quota units/min per user (0 = no pacing). "
         "messages.get uses 5 units each; Gmail allows ~15000/min. Default: %(default)s",
     )
-    p_sync.add_argument(
+    sync_mode = p_sync.add_mutually_exclusive_group()
+    sync_mode.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Delete all stored messages and re-download metadata matching the query. "
+        "The default is to keep existing rows and only fetch new message IDs.",
+    )
+    sync_mode.add_argument(
         "--incremental",
         action="store_true",
-        help="Keep existing rows; only fetch metadata for message IDs not yet in the DB. "
-        "Still lists the full mailbox (messages.list cost). Use the same -q as prior sync "
-        "or run a full sync to rebuild.",
+        help="Deprecated: this is now the default. Keep existing rows and only fetch "
+        "metadata for message IDs not yet in the DB.",
     )
 
     p_rep = sub.add_parser(
@@ -135,6 +141,7 @@ def main(argv=None):
             db.init_schema(conn)
             creds = load_credentials(args.credentials, args.token)
             service = build_gmail_service(creds)
+            incremental = not args.overwrite
             n = run_sync(
                 service,
                 conn,
@@ -142,9 +149,9 @@ def main(argv=None):
                 args.max_messages,
                 args.verbose,
                 args.max_quota_units_per_minute,
-                incremental=args.incremental,
+                incremental=incremental,
             )
-            if args.incremental:
+            if incremental:
                 total = db.message_count(conn)
                 print(
                     "Applied %s new or updated message(s) in %s (%s in database)."

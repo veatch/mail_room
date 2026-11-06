@@ -84,8 +84,9 @@ Options:
 - `-q` / `--query` — Gmail search string (default: `in:anywhere -in:spam -in:trash`)
 - `--max-messages N` — stop after N messages (testing)
 - `-v` / `--verbose` — progress on stderr + rate-limit backoff messages
-- `--incremental` - skip fetching metadata for message IDs already
-  in the DB (still performs a full messages.list pass)
+- Default is **incremental**: keep existing rows and only fetch metadata for
+  message IDs not yet in the DB (still performs a full `messages.list` pass)
+- `--overwrite` — delete all stored messages and re-download matching metadata
 - `--max-quota-units-per-minute` - (default 12000) to pace requests
   below the Gmail per-user quota ceiling of 15000 units/min
 

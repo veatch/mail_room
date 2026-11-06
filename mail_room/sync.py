@@ -148,10 +148,14 @@ def run_sync(
     max_messages,  # type: Optional[int]
     verbose,  # type: bool
     max_quota_units_per_minute=None,  # type: Optional[float]
-    incremental=False,  # type: bool
+    incremental=True,  # type: bool
 ):
     # type: (...) -> int
-    """List + fetch + store. Returns number of message rows written this run."""
+    """List + fetch + store. Returns number of message rows written this run.
+
+    Default is incremental: existing rows are kept and only missing IDs are fetched.
+    Pass incremental=False to delete stored messages and rebuild.
+    """
     if max_quota_units_per_minute is None:
         cap = float(DEFAULT_MAX_QUOTA_UNITS_PER_MINUTE)
     elif max_quota_units_per_minute <= 0:
@@ -165,7 +169,7 @@ def run_sync(
             print(
                 "Note: --query differs from last sync (%r). "
                 "The database may mix results from multiple queries; "
-                "run a full sync without --incremental to rebuild."
+                "pass --overwrite to delete stored messages and rebuild."
                 % (prev_query,),
                 file=sys.stderr,
             )
