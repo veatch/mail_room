@@ -8,21 +8,21 @@ Deleting or changing mail in Gmail is **out of scope**; use Gmail yourself after
 
 - **Python 3.7+** (project metadata: `requires-python` in `pyproject.toml`)
 - [**uv**](https://docs.astral.sh/uv/) for installing dependencies (see below). You can still use plain `pip install .` if you must—this repo declares deps in **`pyproject.toml`** only (there is no `requirements.txt`).
-- A Google Cloud project with the **Gmail API** enabled and an **OAuth 2.0 Client ID** of type **Desktop app**
+- A Google Cloud project with the **Gmail API** and **Drive API** enabled and an **OAuth 2.0 Client ID** of type **Desktop app**
 - Download the client JSON as `credentials.json` in this directory (or pass `--credentials`)
 
 ### One-time Google Cloud setup (summary)
 
 Use a project you own (often easiest under a **personal** Google account so the app is not locked to a company Workspace org).
 
-1. [Google Cloud Console](https://console.cloud.google.com/) → **APIs & Services** → **Enable Gmail API** for your project.
+1. [Google Cloud Console](https://console.cloud.google.com/) → **APIs & Services** → enable **Gmail API** and **Google Drive API** for your project.
 2. **OAuth / Google Auth Platform** — configure the app users will trust when the browser opens:
    - Open **[Google Auth Platform → Audience](https://console.cloud.google.com/auth/audience)** (or **APIs & Services → OAuth consent screen** and follow the same wizard). Set **Audience** to **External** if you use a normal **@gmail.com** account. **Internal** only allows accounts in the same Google Cloud **organization**; personal Gmail will show an error like “restricted to users within its organization.”
    - Set **Publishing status** to **Testing** for a private script (no verification needed for just you).
    - While in **Testing**, add your own Google account under **Test users** (the exact address you sign in with in the browser). Only listed test users can grant access until you publish the app more broadly.
 3. **APIs & Services** → **Credentials** → **Create credentials** → **OAuth client ID** → Application type **Desktop app** → Download JSON and save as `credentials.json` in this directory.
 
-If you change OAuth client or fixed a misconfigured consent screen, delete any existing **`token.json`** in this directory and run **sync** again so authorization starts clean.
+If you change OAuth client, add a scope (Gmail + Drive metadata), or fixed a misconfigured consent screen, delete any existing **`token.json`** in this directory and run a sync again so authorization starts clean. The saved token must include both `gmail.readonly` and `drive.metadata.readonly`; an older Gmail-only token will trigger a new browser consent on the next sync. If consent fails, delete `token.json` and authenticate again.
 
 Keep `credentials.json` and `token.json` private (both are gitignored).
 
@@ -51,6 +51,7 @@ Run the CLI via **`uv run`** (no need to activate the venv):
 
 ```bash
 uv run mail-room sync --db gmail_metadata.sqlite
+uv run mail-room sync-drive --db gmail_metadata.sqlite
 uv run mail-room serve --db gmail_metadata.sqlite
 ```
 
@@ -90,12 +91,21 @@ Options:
 - `--max-quota-units-per-minute` - (default 12000) to pace requests
   below the Gmail per-user quota ceiling of 15000 units/min
 
-**Web interface** — browse senders and messages in your browser (no API calls; reads local database only):
+**Web interface** — browse Gmail messages and senders, plus owned Drive files ranked by size. Drive files can be marked reviewed and given a short explanatory note (up to 500 characters). These annotations are stored locally and kept when `sync-drive --overwrite` refreshes metadata.
 
 ```bash
 uv run mail-room serve --db gmail_metadata.sqlite
 # then open http://127.0.0.1:5000
+# Drive files: http://127.0.0.1:5000/drive
 ```
+
+Drive metadata is synced separately into the same SQLite database:
+
+```bash
+uv run mail-room sync-drive --db gmail_metadata.sqlite
+```
+
+The default Drive query includes files you own and excludes trashed files. On `/drive`, **Remove** hides an item from the list without deleting it from Google Drive; use **show removed** to restore it. Incremental sync skips IDs already stored, so it does not refresh metadata (including size) for existing files; use `--overwrite` to rebuild and refresh them. Google Docs, Sheets, and other native Drive files often have no reported size. Drive API access is metadata-only; file contents are not downloaded.
 
 **Report** — print a ranked table to the terminal (no API calls):
 

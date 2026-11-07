@@ -7,7 +7,8 @@ import sys
 from typing import List, Optional
 
 from mail_room import db
-from mail_room.api import build_gmail_service, load_credentials
+from mail_room.api import build_drive_service, build_gmail_service, load_credentials
+from mail_room.drive_sync import DEFAULT_QUERY as DRIVE_DEFAULT_QUERY, run_drive_sync
 from mail_room.report import write_report
 from mail_room.sync import DEFAULT_QUERY, run_sync
 
@@ -18,7 +19,7 @@ def main(argv=None):
         argv = sys.argv[1:]
 
     parser = argparse.ArgumentParser(
-        description="Mail Room: download Gmail inbox metadata and find messages and senders taking up the most room.",
+        description="Mail Room: sync Gmail and Drive metadata into SQLite and inspect local data.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -74,6 +75,27 @@ def main(argv=None):
         help="Delete all stored messages and re-download metadata matching the query. "
         "The default is to keep existing rows and only fetch new message IDs.",
     )
+
+    p_drive = sub.add_parser(
+        "sync-drive", help="List Drive file metadata and store it in SQLite"
+    )
+    p_drive.add_argument("--db", default=db.DEFAULT_DB_FILENAME,
+                         help="SQLite database path (default: %(default)s)")
+    p_drive.add_argument("--credentials", default="credentials.json",
+                         help="OAuth desktop client secrets JSON (default: %(default)s)")
+    p_drive.add_argument("--token", default="token.json",
+                         help="Saved OAuth token path (default: %(default)s)")
+    p_drive.add_argument("--query", "-q", default=DRIVE_DEFAULT_QUERY,
+                         help="Drive files.list query (default: %(default)s)")
+    p_drive.add_argument("--max-files", type=int, default=None, metavar="N",
+                         help="Stop after storing N files (testing / partial sync)")
+    p_drive.add_argument("-v", "--verbose", action="store_true",
+                         help="Print sync progress and retry messages to stderr")
+    drive_mode = p_drive.add_mutually_exclusive_group()
+    drive_mode.add_argument("--overwrite", action="store_true",
+                            help="Delete stored Drive files and rebuild; refreshes existing metadata")
+    drive_mode.add_argument("--incremental", action="store_true",
+                            help="Deprecated: incremental is the default")
     sync_mode.add_argument(
         "--incremental",
         action="store_true",
@@ -159,6 +181,26 @@ def main(argv=None):
                 )
             else:
                 print("Synced %s messages into %s" % (n, args.db))
+        finally:
+            conn.close()
+    elif args.command == "sync-drive":
+        if args.max_files is not None and args.max_files < 0:
+            parser.error("--max-files must be non-negative")
+        conn = db.connect(args.db)
+        try:
+            db.init_schema(conn)
+            creds = load_credentials(args.credentials, args.token)
+            service = build_drive_service(creds)
+            incremental = not args.overwrite
+            n = run_drive_sync(
+                service, conn, args.query, args.max_files, args.verbose,
+                incremental=incremental,
+            )
+            if incremental:
+                total = db.drive_file_count(conn)
+                print("Applied %s new Drive file(s) in %s (%s in database)." % (n, args.db, total))
+            else:
+                print("Synced %s Drive files into %s" % (n, args.db))
         finally:
             conn.close()
     elif args.command == "report":

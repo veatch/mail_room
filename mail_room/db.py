@@ -1,4 +1,4 @@
-"""SQLite persistence for per-message metadata."""
+"""SQLite persistence for Gmail and Drive metadata."""
 
 import sqlite3
 from typing import List, Optional, Tuple
@@ -36,8 +36,33 @@ def init_schema(conn: sqlite3.Connection) -> None:
             key TEXT PRIMARY KEY,
             value TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS drive_files (
+            file_id TEXT PRIMARY KEY,
+            name TEXT,
+            mime_type TEXT,
+            size INTEGER,
+            modified_time TEXT,
+            parents TEXT,
+            owner_email TEXT,
+            web_view_link TEXT,
+            trashed INTEGER,
+            fetched_at TEXT,
+            reviewed_at TEXT,
+            comment TEXT,
+            hidden_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_drive_files_size ON drive_files (size DESC);
         """
     )
+    # Upgrade databases created before Drive review and notes were available.
+    drive_columns = {row[1] for row in conn.execute("PRAGMA table_info(drive_files)")}
+    if "reviewed_at" not in drive_columns:
+        conn.execute("ALTER TABLE drive_files ADD COLUMN reviewed_at TEXT")
+    if "comment" not in drive_columns:
+        conn.execute("ALTER TABLE drive_files ADD COLUMN comment TEXT")
+    if "hidden_at" not in drive_columns:
+        conn.execute("ALTER TABLE drive_files ADD COLUMN hidden_at TEXT")
     conn.commit()
 
 
@@ -234,6 +259,144 @@ def messages_by_sender(
 def message_count(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS c FROM messages").fetchone()
     return int(row["c"]) if row else 0
+
+
+def drive_file_count(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) AS c FROM drive_files").fetchone()
+    return int(row["c"]) if row else 0
+
+
+def drive_files(
+    conn: sqlite3.Connection,
+    name_filter: Optional[str] = None,
+    exclude_reviewed: bool = False,
+    hidden_only: bool = False,
+) -> List[Tuple[str, str, str, Optional[int], Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]]:
+    """Return non-folder, non-trashed Drive files ordered by size descending.
+
+    Each row is (file_id, name, mime_type, size, modified_time, web_view_link,
+    reviewed_at, comment, hidden_at).
+    """
+    conditions = [
+        "COALESCE(mime_type, '') != 'application/vnd.google-apps.folder'",
+        "COALESCE(trashed, 0) = 0",
+    ]
+    params: List = []
+    if name_filter:
+        conditions.append("LOWER(COALESCE(name, '')) LIKE '%' || LOWER(?) || '%' ESCAPE '\\'")
+        escaped = name_filter.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        params.append(escaped)
+    if exclude_reviewed:
+        conditions.append("reviewed_at IS NULL")
+    if hidden_only:
+        conditions.append("hidden_at IS NOT NULL")
+    else:
+        conditions.append("hidden_at IS NULL")
+    cur = conn.execute(
+        """
+        SELECT file_id, COALESCE(name, '') AS name, COALESCE(mime_type, '') AS mime_type,
+               size, modified_time, web_view_link, reviewed_at, comment, hidden_at
+        FROM drive_files
+        WHERE %s
+        ORDER BY COALESCE(size, 0) DESC, LOWER(COALESCE(name, '')), file_id
+        """ % " AND ".join(conditions),
+        params,
+    )
+    return [
+        (r["file_id"], r["name"], r["mime_type"],
+         int(r["size"]) if r["size"] is not None else None,
+         r["modified_time"], r["web_view_link"], r["reviewed_at"], r["comment"], r["hidden_at"])
+        for r in cur.fetchall()
+    ]
+
+
+def clear_drive_files(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM drive_files")
+    conn.commit()
+
+
+def drive_file_annotations(conn: sqlite3.Connection) -> dict:
+    """Return local review, note, and hidden state keyed by Drive file ID."""
+    return {
+        row["file_id"]: (row["reviewed_at"], row["comment"], row["hidden_at"])
+        for row in conn.execute("SELECT file_id, reviewed_at, comment, hidden_at FROM drive_files")
+    }
+
+
+def insert_drive_files(
+    conn: sqlite3.Connection,
+    rows: List[
+        Tuple[
+            str,
+            Optional[str],
+            Optional[str],
+            Optional[int],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[str],
+            Optional[int],
+            str,
+            Optional[str],
+            Optional[str],
+            Optional[str],
+        ]
+    ],
+) -> None:
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO drive_files (
+            file_id, name, mime_type, size, modified_time,
+            parents, owner_email, web_view_link, trashed, fetched_at,
+            reviewed_at, comment, hidden_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+
+
+def drive_ids_present(conn: sqlite3.Connection, ids: List[str]) -> set:
+    """Return the subset of ``ids`` that already exist as ``file_id`` rows."""
+    if not ids:
+        return set()
+    present = set()
+    chunk_size = 400
+    for i in range(0, len(ids), chunk_size):
+        chunk = ids[i : i + chunk_size]
+        placeholders = ",".join("?" * len(chunk))
+        cur = conn.execute(
+            "SELECT file_id FROM drive_files WHERE file_id IN (%s)" % placeholders,
+            chunk,
+        )
+        for row in cur.fetchall():
+            present.add(row["file_id"])
+    return present
+
+
+def mark_drive_file_reviewed(conn: sqlite3.Connection, file_id: str, reviewed: bool) -> bool:
+    cur = conn.execute(
+        "UPDATE drive_files SET reviewed_at = %s WHERE file_id = ?"
+        % ("datetime('now')" if reviewed else "NULL"),
+        (file_id,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def set_drive_file_comment(conn: sqlite3.Connection, file_id: str, comment: str) -> bool:
+    cur = conn.execute("UPDATE drive_files SET comment = ? WHERE file_id = ?", (comment, file_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def set_drive_file_hidden(conn: sqlite3.Connection, file_id: str, hidden: bool) -> bool:
+    cur = conn.execute(
+        "UPDATE drive_files SET hidden_at = %s WHERE file_id = ?"
+        % ("datetime('now')" if hidden else "NULL"),
+        (file_id,),
+    )
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def ids_present(conn: sqlite3.Connection, ids: List[str]) -> set:

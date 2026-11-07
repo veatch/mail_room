@@ -1,4 +1,4 @@
-"""Gmail API client: OAuth and retried requests."""
+"""Google API client: OAuth, service builders, and retried requests."""
 
 import json
 import os
@@ -12,7 +12,17 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+]
+
+
+def _has_required_scopes(creds):
+    # type: (Optional[Credentials]) -> bool
+    if creds is None or not creds.scopes:
+        return False
+    return creds.has_scopes(SCOPES)
 
 
 def load_credentials(
@@ -22,17 +32,20 @@ def load_credentials(
     creds = None  # type: Optional[Credentials]
     if os.path.exists(token_path):
         try:
-            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+            # Load scopes from the token file, not SCOPES. Passing SCOPES here
+            # would make has_scopes() look granted even when the refresh token
+            # was issued for Gmail only.
+            creds = Credentials.from_authorized_user_file(token_path)
         except (ValueError, OSError):
             creds = None
 
-    if creds and creds.valid:
-        return creds
-
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-        _save_token(creds, token_path)
-        return creds
+    if creds and _has_required_scopes(creds):
+        if creds.valid:
+            return creds
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            _save_token(creds, token_path)
+            return creds
 
     flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
     creds = flow.run_local_server(port=0)
@@ -48,6 +61,11 @@ def _save_token(creds: Credentials, token_path: str) -> None:
 def build_gmail_service(credentials):
     # type: (Credentials) -> Any
     return build("gmail", "v1", credentials=credentials, cache_discovery=False)
+
+
+def build_drive_service(credentials):
+    # type: (Credentials) -> Any
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
 
 def _retry_after_seconds(err):

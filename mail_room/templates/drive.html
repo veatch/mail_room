@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+
+{% block title %}Drive Files — Mail Room{% endblock %}
+
+{% block nav %}
+<nav><a href="/">← Largest messages</a> &nbsp;·&nbsp; <a href="/senders">Top senders</a></nav>
+{% endblock %}
+
+{% block content %}
+<h1>Largest Drive Files</h1>
+
+<div class="controls">
+  <form method="get">
+    {% if hide_reviewed %}<input type="hidden" name="hide_reviewed" value="1">{% endif %}
+    {% if show_hidden %}<input type="hidden" name="show_hidden" value="1">{% endif %}
+    <input type="text" name="name" value="{{ name }}" placeholder="filter by name…">
+    <button type="submit">Search</button>
+    {% if name %}<a href="/drive{% if hide_reviewed or show_hidden %}?{% if hide_reviewed %}hide_reviewed=1{% endif %}{% if hide_reviewed and show_hidden %}&amp;{% endif %}{% if show_hidden %}show_hidden=1{% endif %}{% endif %}">✕ clear</a>{% endif %}
+  </form>
+  <a href="{{ toggle_reviewed }}">{% if hide_reviewed %}show reviewed{% else %}hide reviewed{% endif %}</a>
+  <a href="{{ toggle_hidden }}">{% if show_hidden %}hide removed{% else %}show removed{% endif %}</a>
+</div>
+
+<div id="drive-bulk-bar" class="drive-bulk-bar">
+  <span id="drive-bulk-count">No files selected</span>
+  <button type="button" id="drive-bulk-action" disabled>{% if show_hidden %}Restore{% else %}Delete{% endif %}</button>
+</div>
+
+{% if rows %}
+<table>
+  <thead>
+    <tr>
+      <th class="cb-col"><input type="checkbox" id="drive-check-all" title="Select all visible"></th>
+      <th>name</th>
+      <th>type</th>
+      <th>modified</th>
+      <th class="num">size</th>
+      <th>review</th>
+      <th>note</th>
+      <th>list</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for file_id, file_name, mime_type, size, modified_time, web_view_link, reviewed_at, comment, hidden_at in rows %}
+    <tr data-file-id="{{ file_id }}"{% if reviewed_at %} class="reviewed{% if hidden_at %} removed{% endif %}"{% elif hidden_at %} class="removed"{% endif %}>
+      <td class="cb-col"><input type="checkbox" class="drive-row-cb" data-file-id="{{ file_id }}" aria-label="Select {{ file_name }}"></td>
+      <td>
+        {% if web_view_link %}
+        <a href="{{ web_view_link }}" target="_blank" rel="noopener" title="{{ file_name }}">{{ file_name | truncate(100, killwords=False, end='…') }}</a>
+        {% else %}
+        <span title="{{ file_name }}">{{ file_name | truncate(100, killwords=False, end='…') }}</span>
+        {% endif %}
+      </td>
+      <td class="muted">{{ mime_type | mime_label }}</td>
+      <td class="muted">{{ modified_time[:10] if modified_time else '-' }}</td>
+      <td class="num">{{ size | format_bytes }}</td>
+      <td class="review-cell">
+        <span class="tag-kept">{% if reviewed_at %}reviewed{% endif %}</span>
+        <button type="button" class="review-toggle" data-file-id="{{ file_id }}" data-reviewed="{{ 'true' if reviewed_at else 'false' }}">{% if reviewed_at %}Un-review{% else %}Mark reviewed{% endif %}</button>
+      </td>
+      <td>
+        <form class="note-form" data-file-id="{{ file_id }}">
+          <input class="file-note" type="text" maxlength="500" value="{{ comment or '' }}" placeholder="Add a short note…" aria-label="Note for {{ file_name }}">
+          <button type="submit">Save</button>
+          <span class="note-status muted" aria-live="polite"></span>
+        </form>
+      </td>
+      <td class="remove-cell">{% if hidden_at %}<span class="tag-deleted">removed</span>{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<style>
+  tr.reviewed td { font-style: italic; }
+  tr.removed td { opacity: 0.65; }
+  .cb-col { width: 1%; padding-left: 0.25rem; padding-right: 0; }
+  .review-cell { white-space: nowrap; }
+  .review-toggle { margin-left: 0.4rem; }
+  .drive-bulk-bar { display: flex; align-items: center; gap: 1rem; padding: 0.4rem 0.75rem; margin-bottom: 0.75rem; background: var(--pill-active-bg); border-radius: 4px; font-size: 0.9em; }
+  .drive-bulk-bar span { color: var(--text-muted); }
+  .drive-bulk-bar button { padding: 0.2rem 0.5rem; border: 1px solid var(--border); border-radius: 3px; background: var(--btn-bg); color: var(--text); cursor: pointer; }
+  .drive-bulk-bar button:disabled { color: var(--text-muted); opacity: 0.45; cursor: default; }
+  .note-form { display: flex; gap: 0.35rem; align-items: center; }
+  .file-note { min-width: 150px; width: 100%; max-width: 290px; padding: 0.25rem 0.4rem; border: 1px solid var(--border); border-radius: 3px; background: var(--input-bg); color: var(--text); }
+  .note-form button, .review-toggle, .hide-toggle { padding: 0.2rem 0.4rem; border: 1px solid var(--border); border-radius: 3px; background: var(--btn-bg); color: var(--text); cursor: pointer; }
+</style>
+
+<p class="summary">
+  Showing {{ rows | length }} of {{ total_files }} file{{ '' if total_files == 1 else 's' }}
+  ({{ total_size | format_bytes }} total{% if name %} matching <em>"{{ name }}"</em>{% endif %})
+</p>
+{% if load_more_url %}
+<p>
+  <a href="{{ load_more_url }}">Load 20 more</a>
+  &nbsp;·&nbsp;
+  <a href="{{ show_all_url }}">Show all {{ total_files }}</a>
+</p>
+{% endif %}
+{% else %}
+<p class="muted">No Drive files found{% if name %} matching <em>"{{ name }}"</em>{% endif %}. Run <code>sync-drive</code> first if the database is empty.</p>
+{% endif %}
+
+<script>
+  document.querySelectorAll('.review-toggle').forEach(function(button) {
+    button.addEventListener('click', function() {
+      var fileId = encodeURIComponent(button.dataset.fileId);
+      var reviewed = button.dataset.reviewed !== 'true';
+      fetch('/drive/file/' + fileId + '/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reviewed: reviewed })
+      }).then(function(response) {
+        if (!response.ok) throw new Error('Could not update review status');
+        window.location.reload();
+      }).catch(function() { button.textContent = 'Save failed'; });
+    });
+  });
+
+  var driveCheckAll = document.getElementById('drive-check-all');
+  var driveBulkCount = document.getElementById('drive-bulk-count');
+  var driveBulkAction = document.getElementById('drive-bulk-action');
+
+  function updateDriveBulkBar() {
+    var checked = Array.from(document.querySelectorAll('.drive-row-cb:checked'));
+    var all = document.querySelectorAll('.drive-row-cb');
+    driveBulkCount.textContent = checked.length ? checked.length + ' selected' : 'No files selected';
+    driveBulkAction.disabled = checked.length === 0;
+    driveCheckAll.indeterminate = checked.length > 0 && checked.length < all.length;
+    driveCheckAll.checked = all.length > 0 && checked.length === all.length;
+  }
+
+  document.querySelectorAll('.drive-row-cb').forEach(function(checkbox) {
+    checkbox.addEventListener('change', updateDriveBulkBar);
+  });
+
+  if (driveCheckAll) {
+    driveCheckAll.addEventListener('change', function() {
+      document.querySelectorAll('.drive-row-cb').forEach(function(checkbox) {
+        checkbox.checked = driveCheckAll.checked;
+      });
+      updateDriveBulkBar();
+    });
+  }
+
+  driveBulkAction.addEventListener('click', function() {
+    var hidden = {{ 'true' if show_hidden else 'false' }};
+    var selected = Array.from(document.querySelectorAll('.drive-row-cb:checked'));
+    driveBulkAction.disabled = true;
+    Promise.all(selected.map(function(checkbox) {
+      return fetch('/drive/file/' + encodeURIComponent(checkbox.dataset.fileId) + '/hide', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hidden: !hidden })
+      }).then(function(response) {
+        if (!response.ok) throw new Error('Could not update list status');
+      });
+    })).then(function() {
+      window.location.reload();
+    }).catch(function() {
+      driveBulkCount.textContent = 'Could not update selected files';
+      driveBulkAction.disabled = false;
+    });
+  });
+
+  document.querySelectorAll('.note-form').forEach(function(form) {
+    form.addEventListener('submit', function(event) {
+      event.preventDefault();
+      var status = form.querySelector('.note-status');
+      status.textContent = 'Saving…';
+      fetch('/drive/file/' + encodeURIComponent(form.dataset.fileId) + '/comment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ comment: form.querySelector('.file-note').value })
+      }).then(function(response) {
+        if (!response.ok) throw new Error('Could not save note');
+        status.textContent = 'Saved';
+      }).catch(function() { status.textContent = 'Save failed'; });
+    });
+  });
+</script>
+{% endblock %}

@@ -27,12 +27,31 @@ def _set_param(args, key, value):
     return "?" + urlencode(d)
 
 
+def _mime_label(mime_type):
+    labels = {
+        "application/vnd.google-apps.document": "Google Doc",
+        "application/vnd.google-apps.spreadsheet": "Google Sheet",
+        "application/vnd.google-apps.presentation": "Google Slides",
+        "application/vnd.google-apps.drawing": "Google Drawing",
+        "application/vnd.google-apps.form": "Google Form",
+        "application/vnd.google-apps.folder": "Folder",
+        "application/pdf": "PDF",
+        "image/jpeg": "JPEG image",
+        "image/png": "PNG image",
+        "text/plain": "Text file",
+    }
+    if mime_type in labels:
+        return labels[mime_type]
+    return mime_type.rsplit("/", 1)[-1] if mime_type else "Unknown"
+
+
 def create_app(db_path):
     app = Flask(__name__)
     app.config["DB_PATH"] = db_path
 
     app.jinja_env.filters["format_bytes"] = _format_bytes
     app.jinja_env.filters["format_date"] = _format_date
+    app.jinja_env.filters["mime_label"] = _mime_label
 
     def get_db():
         if "db" not in g:
@@ -131,6 +150,44 @@ def create_app(db_path):
             show_all_url=show_all_url,
         )
 
+    @app.route("/drive")
+    def drive():
+        name = request.args.get("name", "").strip() or None
+        hide_reviewed = request.args.get("hide_reviewed") == "1"
+        show_hidden = request.args.get("show_hidden") == "1"
+        try:
+            limit = int(request.args.get("limit", PAGE_SIZE))
+            if limit < 1:
+                limit = PAGE_SIZE
+        except (ValueError, TypeError):
+            limit = PAGE_SIZE
+
+        all_rows = db.drive_files(
+            get_db(), name_filter=name, exclude_reviewed=hide_reviewed,
+            hidden_only=show_hidden,
+        )
+        total_files = len(all_rows)
+        total_size = sum(row[3] or 0 for row in all_rows)
+        rows = all_rows[:limit]
+        load_more_url = _set_param(request.args, "limit", limit + PAGE_SIZE) if limit < total_files else None
+        show_all_url = _set_param(request.args, "limit", total_files) if limit < total_files else None
+        toggle_reviewed = _toggle_param(request.args, "hide_reviewed", "1")
+        toggle_hidden = _toggle_param(request.args, "show_hidden", "1")
+
+        return render_template(
+            "drive.html",
+            rows=rows,
+            name=name or "",
+            hide_reviewed=hide_reviewed,
+            show_hidden=show_hidden,
+            total_files=total_files,
+            total_size=total_size,
+            load_more_url=load_more_url,
+            show_all_url=show_all_url,
+            toggle_reviewed=toggle_reviewed,
+            toggle_hidden=toggle_hidden,
+        )
+
     @app.route("/sender/<path:sender>")
     def sender_detail(sender):
         show_deleted = request.args.get("show_deleted") == "1"
@@ -181,6 +238,39 @@ def create_app(db_path):
     def keep_message(message_id):
         kept = (request.get_json(silent=True) or {}).get("kept", True)
         db.mark_kept(get_db(), message_id, bool(kept))
+        return "", 204
+
+    @app.route("/drive/file/<file_id>/review", methods=["POST"])
+    def review_drive_file(file_id):
+        payload = request.get_json(silent=True) or {}
+        reviewed = payload.get("reviewed")
+        if not isinstance(reviewed, bool):
+            return "reviewed must be a boolean", 400
+        if not db.mark_drive_file_reviewed(get_db(), file_id, reviewed):
+            return "Drive file not found", 404
+        return "", 204
+
+    @app.route("/drive/file/<file_id>/comment", methods=["POST"])
+    def comment_drive_file(file_id):
+        payload = request.get_json(silent=True) or {}
+        comment = payload.get("comment")
+        if not isinstance(comment, str):
+            return "comment must be text", 400
+        comment = comment.strip()
+        if len(comment) > 500:
+            return "comment must be 500 characters or fewer", 400
+        if not db.set_drive_file_comment(get_db(), file_id, comment):
+            return "Drive file not found", 404
+        return "", 204
+
+    @app.route("/drive/file/<file_id>/hide", methods=["POST"])
+    def hide_drive_file(file_id):
+        payload = request.get_json(silent=True) or {}
+        hidden = payload.get("hidden")
+        if not isinstance(hidden, bool):
+            return "hidden must be a boolean", 400
+        if not db.set_drive_file_hidden(get_db(), file_id, hidden):
+            return "Drive file not found", 404
         return "", 204
 
     return app
